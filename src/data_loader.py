@@ -141,3 +141,26 @@ def unpack_and_clean_dir(raw_dir: str | Path, out_dir: str | Path):
         m["recording_id"] = rec_id
 
         m.to_csv(out_dir / f"{zpath.stem}_cleaned.csv", index=False)
+
+
+def read_split_activity(csv_path):
+    """Return (split, activity) from the cleaned CSV (reads 1 row)."""
+    s = pd.read_csv(csv_path, usecols=["split","activity"], nrows=1)
+    return s.loc[0, "split"], s.loc[0, "activity"]
+
+def estimate_hz_csv(csv_path):
+    """Estimate sampling rate (Hz) from a cleaned CSV (median Δt)."""
+    s = pd.read_csv(csv_path, usecols=["time_s"])
+    t = s["time_s"].to_numpy()
+    if len(t) < 2:
+        return float("nan")
+    dt = t[1:] - t[:-1]
+    dt = dt[dt > 0]
+    return float(1.0 / pd.Series(dt).median()) if len(dt) else float("nan")
+
+def duration_seconds_csv(csv_path):
+    """Duration (seconds) from first to last timestamp in a cleaned CSV."""
+    s = pd.read_csv(csv_path, usecols=["time_s"])
+    if s.empty:
+        return 0.0
+    return float(s["time_s"].iloc[-1] - s["time_s"].iloc[0])
