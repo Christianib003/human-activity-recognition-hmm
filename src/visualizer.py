@@ -73,3 +73,73 @@ def plot_timeline(df_seq, title="HMM Decoding: True vs. Predicted Activity"):
     ax.legend(loc="upper right", frameon=True)
     fig.tight_layout()
     plt.show()
+
+def plot_emission_means(means: np.ndarray, feat_cols, title="HMM Emission Means (per state)"):
+    """
+    Visualize emission means as heatmap.
+    means: [C, D] array where C=num_states, D=num_features
+    feat_cols: list of feature names
+    """
+    C, D = means.shape
+    fig, ax = plt.subplots(figsize=(14, 5))
+    im = ax.imshow(means, cmap=plt.cm.RdBu_r, aspect="auto")
+    cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cb.set_label("Standardized Mean Value")
+    
+    ax.set_yticks(range(C))
+    ax.set_yticklabels(STATES)
+    ax.set_ylabel("Activity State")
+    
+    # Show subset of features if too many
+    if D > 20:
+        tick_step = max(1, D // 20)
+        ax.set_xticks(range(0, D, tick_step))
+        ax.set_xticklabels([feat_cols[i] for i in range(0, D, tick_step)], rotation=90)
+    else:
+        ax.set_xticks(range(D))
+        ax.set_xticklabels(feat_cols, rotation=90)
+    ax.set_xlabel("Feature")
+    ax.set_title(title, pad=12, fontsize=16)
+    
+    fig.tight_layout()
+    plt.show()
+
+def plot_emission_top_features(means: np.ndarray, vars_: np.ndarray, feat_cols, top_n=8, title_prefix="Emission Distributions"):
+    """
+    Plot distributions (mean ± std) for top N most discriminative features.
+    Discriminativeness = variance of means across states.
+    """
+    C, D = means.shape
+    # Find most discriminative features
+    discriminative = np.var(means, axis=0)  # variance across states
+    top_idx = np.argsort(discriminative)[-top_n:][::-1]
+    
+    n_cols = 4
+    n_rows = int(np.ceil(top_n / n_cols))
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, n_rows * 3))
+    axes = axes.flatten() if top_n > 1 else [axes]
+    
+    for plot_idx, feat_idx in enumerate(top_idx):
+        ax = axes[plot_idx]
+        feat_name = feat_cols[feat_idx]
+        
+        x = np.arange(C)
+        y = means[:, feat_idx]
+        yerr = np.sqrt(vars_[:, feat_idx])
+        
+        ax.bar(x, y, yerr=yerr, capsize=5, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'][:C], alpha=0.7)
+        ax.set_xticks(x)
+        ax.set_xticklabels(STATES, rotation=45, ha='right')
+        ax.set_ylabel("Standardized Value")
+        ax.set_title(f"{feat_name}\n(discrim={discriminative[feat_idx]:.2f})", fontsize=10)
+        ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
+        ax.grid(axis='y', alpha=0.3)
+    
+    # Hide unused subplots
+    for idx in range(top_n, len(axes)):
+        axes[idx].axis('off')
+    
+    fig.suptitle(f"{title_prefix}: Top {top_n} Discriminative Features", fontsize=16, y=1.00)
+    fig.tight_layout()
+    plt.show()
