@@ -1,0 +1,14 @@
+# Environment
+.venv
+
+# Utility files
+project_cards.md
+
+# Data
+data/
+
+# Models
+models/
+
+# Cache files
+__pycache__/
