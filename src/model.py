@@ -150,3 +150,114 @@ def class_metrics_from_cm(cm: np.ndarray):
     return pd.DataFrame(per), overall_acc
 
 
+def _logsumexp(a, axis=None):
+    m = np.max(a, axis=axis, keepdims=True)
+    s = m + np.log(np.sum(np.exp(a - m), axis=axis, keepdims=True))
+    return np.squeeze(s, axis=axis)
+
+def _emission_logprob(X, means, vars_):
+    """Return obs_logprob [T,C] for diagonal Gaussians."""
+    T, D = X.shape
+    C = means.shape[0]
+    out = np.empty((T, C), dtype=float)
+    const = -0.5 * (D * np.log(2.0 * np.pi))
+    for c in range(C):
+        inv = 1.0 / vars_[c]
+        diff = X - means[c]
+        quad = np.sum(diff * diff * inv, axis=1)
+        logdet = np.sum(np.log(vars_[c]))
+        out[:, c] = const - 0.5 * quad - 0.5 * logdet
+    return out
+
+def _forward_backward_log(obs_log, logA, logpi):
+    """
+    Forward-backward in log-space.
+    Returns: loglik, gamma [T,C], xi [T-1,C,C]
+    """
+    T, C = obs_log.shape
+    alpha = np.empty((T, C))
+    beta  = np.empty((T, C))
+    # forward
+    alpha[0] = logpi + obs_log[0]
+    for t in range(1, T):
+        alpha[t] = obs_log[t] + _logsumexp(alpha[t-1][:, None] + logA, axis=0)
+    loglik = _logsumexp(alpha[-1], axis=0)
+
+    # backward
+    beta[-1] = 0.0
+    for t in range(T-2, -1, -1):
+        beta[t] = _logsumexp(logA + (obs_log[t+1] + beta[t+1])[None, :], axis=1)
+
+    # posteriors
+    gamma = alpha + beta - loglik  # log gamma
+    gamma = np.exp(gamma)
+    # xi
+    xi = np.empty((T-1, C, C))
+    for t in range(T-1):
+        m = alpha[t][:, None] + logA + (obs_log[t+1] + beta[t+1])[None, :]
+        m -= _logsumexp(m, axis=None)  # normalize
+        xi[t] = np.exp(m)
+    return float(loglik), gamma, xi
+
+def em_baum_welch(train_df: pd.DataFrame, feat_cols, init_params,
+                  max_iter=25, tol=1e-3, var_floor=1e-3):
+    """
+    Run EM over labeled *sequences* (we ignore labels; use only order).
+    Returns: params_em, loglik_list
+    """
+    C = len(STATES)
+    means = init_params["means"].copy()
+    vars_ = init_params["vars"].copy()
+    A     = init_params["A"].copy()
+    pi    = init_params["pi"].copy()
+
+    loglik_hist = []
+    for it in range(max_iter):
+        # E-step accumulators
+        gamma_sum   = np.zeros(C)
+        xi_sum      = np.zeros((C, C))
+        mu_num      = np.zeros((C, len(feat_cols)))
+        var_num     = np.zeros((C, len(feat_cols)))
+        pi_accum    = np.zeros(C)
+
+        total_loglik = 0.0
+
+        logA  = np.log(A + 1e-12)
+        logpi = np.log(pi + 1e-12)
+
+        for rec_id, g in train_df.groupby("recording_id", sort=False):
+            g = g.sort_values("t_start")
+            X = g[feat_cols].to_numpy()
+
+            obs_log = _emission_logprob(X, means, vars_)
+            loglik, gamma, xi = _forward_backward_log(obs_log, logA, logpi)
+
+            total_loglik += loglik
+            # posteriors
+            gamma_sum += gamma.sum(axis=0)
+            xi_sum    += xi.sum(axis=0)
+            pi_accum  += gamma[0]
+
+            # means/vars numerators
+            mu_num  += gamma.T @ X
+            # var numerator: sum_c,t gamma_tc * (x_t - mu_c)^2
+            # (we use current means for E-step; M-step will divide by gamma_sum)
+            for c in range(C):
+                diff = X - means[c]
+                var_num[c] += (gamma[:, c][:, None] * (diff * diff)).sum(axis=0)
+
+        # M-step
+        # transitions
+        A = xi_sum / np.maximum(xi_sum.sum(axis=1, keepdims=True), 1e-12)
+        # initial
+        pi = pi_accum / np.maximum(pi_accum.sum(), 1e-12)
+        # emissions
+        means = mu_num / np.maximum(gamma_sum[:, None], 1e-12)
+        vars_ = var_num / np.maximum(gamma_sum[:, None], 1e-12)
+        vars_[vars_ < var_floor] = var_floor
+
+        loglik_hist.append(total_loglik)
+        if it > 0 and (total_loglik - loglik_hist[-2]) < tol:
+            break
+
+    return {"means": means, "vars": vars_, "A": A, "pi": pi}, loglik_hist
